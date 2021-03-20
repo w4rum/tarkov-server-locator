@@ -1,0 +1,6 @@
+aiohttp
+aiohttp-requests
+dataclasses-json
+discord.py
+pyinstaller
+pywin32
