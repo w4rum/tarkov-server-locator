@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TextIO, AsyncIterator, Tuple
 
 import aiohttp
@@ -12,6 +13,7 @@ import discord
 import win32file
 from aiohttp_requests import requests
 from dataclasses_json import dataclass_json
+from dateutil.parser import parse
 
 
 @dataclass_json
@@ -102,15 +104,19 @@ def open_log_file() -> Tuple[TextIO, str]:
     # open the file descriptor
     f = open(file_descriptor, encoding="UTF-8")
     # seek to end
-    f.seek(0, os.SEEK_END)
+    # f.seek(0, os.SEEK_END)
 
     logger.debug(f"Opened log file {log_filename}")
     return f, log_filename
 
 
-async def log_follow() -> AsyncIterator[str]:
+async def log_follow() -> AsyncIterator[Tuple[str, bool]]:
     f, f_name = open_log_file()
     no_new_lines_counter = 0
+
+    # only post live sessions to Discord, post previous sessions to console only
+    scanned_through_file = False
+
     # read indefinitely
     while True:
         # read until end of file
@@ -124,12 +130,13 @@ async def log_follow() -> AsyncIterator[str]:
                 logger.debug(f"DECODE_ERROR")
             # check if we're at EOF
             if not line:
+                scanned_through_file = True
                 no_new_lines_counter += 1
                 break
             else:
                 no_new_lines_counter = 0
             logger.debug(f"[READ]{line}")
-            yield line
+            yield line, scanned_through_file
 
         # if we've seen no new lines for 30 iterations, check if there is a new log file
         if no_new_lines_counter > 30:
@@ -140,6 +147,7 @@ async def log_follow() -> AsyncIterator[str]:
                 logger.debug("new log file")
                 f.close()
                 f = f_new
+                scanned_through_file = False
             else:
                 logger.debug("no new log file")
                 f_new.close()
@@ -149,11 +157,13 @@ async def log_follow() -> AsyncIterator[str]:
         logger.debug(f"WOKE_UP")
 
 
-async def parse_line(line):
-    match = re.search(r"Status: Busy, Ip: ([^,]+).*shortId: (....)", line)
+async def parse_line(line, is_live_session):
+    match = re.search(r"^([^|]*).*Status: Busy, Ip: ([^,]+).*shortId: (....)", line)
     if match is None:
         return
-    ip, lobby_id = match.group(1, 2)
+    time_str, ip, lobby_id = match.group(1, 2, 3)
+
+    time = parse(time_str)
 
     response = await requests.get(f"http://ip-api.com/json/{ip}")
     response_json = await response.json()
@@ -162,11 +172,17 @@ async def parse_line(line):
         logger.error(f"unsuccessfull ip location query: {response_json}")
         return
 
-    await post_location(lobby_id, response_json["country"])
+    await post_location(lobby_id, response_json["country"], time, is_live_session)
 
 
-async def post_location(lobby_id: str, country: str) -> None:
-    logger.info(f"Posting: lobby_id {lobby_id}, county {country}")
+async def post_location(lobby_id: str, country: str, time: datetime, is_live_session: bool) -> None:
+    if not is_live_session:
+        logger.info(f"Previous session @ {time.strftime('%H:%M:%S')}: lobby_id {lobby_id}, country {country}")
+
+    if not is_live_session:
+        return
+    logger.info(f"Live session: lobby_id {lobby_id}, country {country}")
+
     embed = discord.Embed(title=config.player_name)
     embed.add_field(name="Lobby ID", value=lobby_id)
     embed.add_field(name="Country", value=country)
@@ -179,8 +195,8 @@ async def post_location(lobby_id: str, country: str) -> None:
 
 
 async def main() -> None:
-    async for line in log_follow():
-        await parse_line(line)
+    async for line, is_live_session in log_follow():
+        await parse_line(line, is_live_session)
 
 
 if __name__ == "__main__":
