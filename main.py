@@ -147,6 +147,7 @@ async def log_follow() -> AsyncIterator[Tuple[str, bool]]:
                 logger.debug("new log file")
                 f.close()
                 f = f_new
+                f_name = f_new_name
                 scanned_through_file = False
             else:
                 logger.debug("no new log file")
